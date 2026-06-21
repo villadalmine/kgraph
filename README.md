@@ -314,6 +314,28 @@ kgraph is built **spec-first**: each feature has a spec it's checked against.
 - [`docs/IMPROVEMENTS.md`](docs/IMPROVEMENTS.md) — backlog & deferred items
 - [`CHANGELOG.md`](CHANGELOG.md) — what changed, by phase
 
+## Roadmap
+
+**Done** (specs 0001–0014): namespace & cluster diagrams · layer
+detection/filtering · docs-as-code (architecture-first, tiered) · styled output ·
+AI explain/ask · `doctor` capability checks · traffic via Hubble · security
+overlay (coverage + gap analysis + policy generation) · L7 detail · combined
+topology+traffic · interactive web UI (Cytoscape, K8s icons, animated traffic,
+render cache, exports) · live traffic · Prometheus throughput rates ·
+cluster-agnostic discovery + Pod/Workload dedup · TLS/mTLS relay · test coverage ·
+CI + goreleaser + container image.
+
+**What's left** (see [`docs/IMPROVEMENTS.md`](docs/IMPROVEMENTS.md) for detail):
+
+- **Web authentication** (OIDC / GitHub) for exposed `serve` — designed in
+  [`specs/0015-web-oidc-auth.md`](specs/0015-web-oidc-auth.md), **not yet built**.
+- **Per-edge Prometheus rates** — needs a `hubble-metrics` ServiceMonitor in the
+  cluster (deferred; per-workload throughput already ships).
+- **Per-user RBAC via impersonation** (Phase 2 of auth).
+- **Markdown export in the web UI**; web HTTP-handler/SSE tests.
+- **ELK / alternative layout** for very large CLI/SVG exports (research).
+- Publish first GitHub release + make the ghcr image public.
+
 ## Limitations & notes
 
 - Large namespaces are slow to lay out as a **single SVG** — use `--layer` or

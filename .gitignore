@@ -5,6 +5,8 @@
 /kgraph-docs/
 *.svg
 *.d2
+# ...but keep the vendored, embedded web assets (needed by go:embed at build)
+!internal/web/static/icons/*.svg
 
 # secrets / local config
 .env
