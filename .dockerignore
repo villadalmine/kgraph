@@ -1,0 +1,7 @@
+kgraph
+kgraph-docs/
+demo-out/
+*.svg
+*.d2
+.env
+.git

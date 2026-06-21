@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kgraph</title>
+<script src="/static/cytoscape.min.js"></script>
+<style>
+  :root { --bg:#0f172a; --panel:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#3b82f6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--fg); height:100vh; display:flex; flex-direction:column; }
+  header { background:var(--panel); padding:10px 16px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; border-bottom:1px solid #334155; }
+  header h1 { font-size:16px; margin:0 12px 0 0; }
+  select, button { background:#0b1220; color:var(--fg); border:1px solid #334155; border-radius:6px; padding:6px 10px; font-size:13px; }
+  button { cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  label { font-size:13px; color:var(--muted); display:flex; gap:5px; align-items:center; }
+  #stage { flex:1; position:relative; background:#0b1020; }
+  #cy { position:absolute; inset:0; }
+  #status { font-size:12px; color:var(--muted); margin-left:auto; }
+  .err { color:#f87171; }
+  #spinner { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+             background:rgba(11,16,32,.5); z-index:5; }
+  #spinner.on { display:flex; }
+  .ring { width:38px; height:38px; border:4px solid #334155; border-top-color:var(--accent);
+          border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #tip { position:absolute; z-index:6; pointer-events:none; display:none; max-width:320px;
+         background:#0b1220; border:1px solid #334155; border-radius:8px; padding:8px 10px;
+         font-size:12px; box-shadow:0 6px 20px rgba(0,0,0,.4); }
+  #tip b { color:#fff; }
+  #tip .k { color:var(--muted); }
+  #legend { position:absolute; left:12px; bottom:12px; z-index:4; background:rgba(15,23,42,.85);
+            border:1px solid #334155; border-radius:8px; padding:8px 10px; font-size:11px; color:var(--muted); }
+  #legend span { display:inline-block; width:18px; height:0; border-top:3px solid; vertical-align:middle; margin-right:5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>kgraph</h1>
+  <label>view
+    <select id="view">
+      <option value="ns">namespace</option>
+      <option value="traffic">traffic</option>
+      <option value="combined">topology+traffic</option>
+      <option value="cluster">cluster</option>
+    </select>
+  </label>
+  <label>namespace <select id="ns"></select></label>
+  <label>layer <select id="layer"><option value="">(all)</option></select></label>
+  <label>layout
+    <select id="layout">
+      <option value="cose">force</option>
+      <option value="breadthfirst">hierarchy</option>
+      <option value="concentric">concentric</option>
+      <option value="grid">grid</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="icons" checked> Icons</label>
+  <label id="l7wrap" style="display:none"><input type="checkbox" id="l7"> L7</label>
+  <label id="livewrap" style="display:none"><input type="checkbox" id="live"> Live</label>
+  <button class="primary" id="render">Render</button>
+  <button id="fit" title="Fit graph to view">Fit</button>
+  <button id="dlSvg" title="Export current view as SVG (server-rendered)">SVG ⭳</button>
+  <button id="dlD2" title="Export current view as D2 source">D2 ⭳</button>
+  <span id="status"></span>
+</header>
+<div id="stage">
+  <div id="cy"></div>
+  <div id="spinner"><div class="ring"></div></div>
+  <div id="tip"></div>
+  <div id="legend">
+    <span style="border-color:#2563EB"></span>allowed&nbsp;
+    <span style="border-color:#DC2626"></span>dropped&nbsp;
+    <span style="border-color:#D97706;border-top-style:dashed"></span>gap&nbsp;
+    <span style="border-color:#22c55e;border-top-style:dashed"></span>selector&nbsp;
+    <span style="border-color:#94a3b8"></span>owner
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const status = (m, err) => { $('status').textContent = m; $('status').className = err ? 'err' : ''; };
+const busy = on => { $('spinner').classList.toggle('on', on); $('render').disabled = on; };
+
+let cy = null, liveTimer = null, flowAnim = null;
+
+function initCy() {
+  cy = cytoscape({
+    container: $('cy'),
+    wheelSensitivity: 0.2,
+    style: [
+      { selector: 'node', style: {
+        'background-color': 'data(color)', 'border-color': 'data(stroke)', 'border-width': 2,
+        'label': 'data(label)', 'color': '#e2e8f0', 'font-size': 10, 'text-wrap': 'wrap',
+        'text-max-width': 120, 'text-valign': 'bottom', 'text-margin-y': 3, 'width': 26, 'height': 26 } },
+      { selector: 'node.icon', style: {
+        'background-image': 'data(iconUrl)', 'background-fit': 'contain', 'background-color': '#ffffff',
+        'background-opacity': 1, 'background-image-opacity': 1, 'border-width': 2,
+        'width': 36, 'height': 36, 'shape': 'round-rectangle' } },
+      { selector: 'node[alert]', style: { 'border-color': '#DC2626', 'border-width': 4 } },
+      { selector: 'edge', style: {
+        'width': 'data(width)', 'line-color': 'data(color)', 'target-arrow-color': 'data(color)',
+        'target-arrow-shape': 'triangle', 'arrow-scale': 0.8, 'curve-style': 'bezier',
+        'label': 'data(label)', 'font-size': 8, 'color': '#94a3b8', 'text-rotation': 'autorotate' } },
+      { selector: 'edge[dashed]', style: { 'line-style': 'dashed' } },
+      { selector: 'edge.flow', style: { 'line-style': 'dashed', 'line-dash-pattern': [6, 4] } },
+      { selector: '.faded', style: { 'opacity': 0.12 } },
+      { selector: '.hi', style: { 'opacity': 1 } },
+    ],
+  });
+
+  cy.on('mouseover', 'node', e => showTip(e));
+  cy.on('mouseout', 'node', () => $('tip').style.display = 'none');
+  cy.on('tap', 'node', e => highlight(e.target));
+  cy.on('tap', e => { if (e.target === cy) clearHighlight(); });
+}
+
+function showTip(e) {
+  const d = e.target.data(), tip = $('tip');
+  const labels = d.labels ? Object.entries(d.labels).slice(0, 8).map(([k, v]) => `${k}=${v}`).join(', ') : '';
+  tip.innerHTML = `<b>${d.kind}/${d.name}</b><br>` +
+    (d.namespace ? `<span class="k">ns:</span> ${d.namespace}<br>` : '') +
+    (d.note ? `<span class="k">rate:</span> ${d.note}<br>` : '') +
+    (labels ? `<span class="k">labels:</span> ${labels}` : '');
+  const p = e.renderedPosition;
+  tip.style.left = (p.x + 14) + 'px'; tip.style.top = (p.y + 14) + 'px'; tip.style.display = 'block';
+}
+
+function highlight(node) {
+  const hood = node.closedNeighborhood();
+  cy.elements().addClass('faded');
+  hood.removeClass('faded');
+}
+function clearHighlight() { cy.elements().removeClass('faded'); }
+
+// Animate flow edges: move the dash offset so traffic appears to flow.
+function startFlowAnim() {
+  if (flowAnim) return;
+  let off = 0;
+  const step = () => { off = (off + 0.6) % 10; if (cy) cy.edges('.flow').style('line-dash-offset', -off); flowAnim = requestAnimationFrame(step); };
+  flowAnim = requestAnimationFrame(step);
+}
+function stopFlowAnim() { if (flowAnim) { cancelAnimationFrame(flowAnim); flowAnim = null; } }
+
+const EDGE_COLOR = { owner: '#94a3b8', selector: '#22c55e', ref: '#f59e0b', crd: '#a78bfa' };
+function edgeStyle(e) {
+  if (e.kind === 'flow') {
+    let color = '#2563EB';
+    if (e.error) color = '#B91C1C'; else if (e.dropped) color = '#DC2626'; else if (e.gap) color = '#D97706';
+    const width = 1 + Math.log2(1 + (e.weight || 1));
+    return { color, width, flow: true, dashed: e.gap };
+  }
+  return { color: EDGE_COLOR[e.kind] || '#64748b', width: 1.5, flow: false, dashed: e.kind !== 'owner' };
+}
+
+function toElements(doc) {
+  const els = [];
+  for (const n of doc.nodes) {
+    const label = n.note ? `${n.name}\n${n.note}` : n.name;
+    const iconUrl = n.icon ? `/static/icons/${n.icon}.svg` : '';
+    els.push({ data: { id: n.id, label, kind: n.kind, name: n.name, namespace: n.namespace,
+      color: n.color, stroke: n.stroke, iconUrl, note: n.note, labels: n.labels, alert: n.alert ? 1 : undefined } });
+  }
+  for (const e of doc.edges) {
+    const s = edgeStyle(e);
+    els.push({ data: { id: e.id, source: e.source, target: e.target, label: e.note || '',
+      color: s.color, width: s.width }, classes: (s.flow ? 'flow ' : '') + (s.dashed ? 'dashed' : '') });
+  }
+  return els;
+}
+
+function runLayout() {
+  const name = $('layout').value;
+  const opts = { name, animate: true, animationDuration: 400, fit: true, padding: 30 };
+  if (name === 'cose') Object.assign(opts, { idealEdgeLength: 90, nodeRepulsion: 9000 });
+  if (name === 'breadthfirst') opts.directed = true;
+  cy.layout(opts).run();
+}
+
+async function graphURL() {
+  const view = $('view').value, ns = $('ns').value, layer = $('layer').value, l7 = $('l7').checked ? 1 : 0;
+  return `/api/graph?view=${view}&ns=${encodeURIComponent(ns)}&layer=${encodeURIComponent(layer)}&l7=${l7}`;
+}
+
+async function loadGraph(relayout) {
+  const r = await fetch(await graphURL());
+  if (!r.ok) throw new Error(await r.text());
+  const doc = await r.json();
+  cy.elements().remove();
+  cy.add(toElements(doc));
+  applyIcons();
+  cy.edges('.flow').length ? startFlowAnim() : stopFlowAnim();
+  if (relayout) runLayout();
+  return doc;
+}
+
+// Toggle K8s resource icons: nodes with an iconUrl get the `icon` class.
+function applyIcons() {
+  const on = $('icons').checked;
+  cy.nodes().forEach(n => n.toggleClass('icon', on && !!n.data('iconUrl')));
+}
+
+async function render() {
+  busy(true); status('rendering…');
+  try {
+    const doc = await loadGraph(true);
+    let msg = `done — ${doc.nodes.length} nodes, ${doc.edges.length} edges`;
+    if ($('view').value === 'ns' && !$('layer').value && doc.nodes.length > 150)
+      msg += '; pick a layer for a clearer view';
+    status(msg);
+  } catch (e) { status('error: ' + e.message, true); }
+  finally { busy(false); }
+}
+
+// Export via the server (D2/SVG pipeline), independent of the interactive canvas.
+function exportURL(format) {
+  const view = $('view').value, ns = $('ns').value, layer = $('layer').value, l7 = $('l7').checked ? 1 : 0;
+  return `/render?view=${view}&ns=${encodeURIComponent(ns)}&layer=${encodeURIComponent(layer)}&l7=${l7}&format=${format}`;
+}
+function diagramName() {
+  const view = $('view').value, ns = $('ns').value, layer = $('layer').value;
+  if (view === 'cluster') return 'cluster' + (layer ? '-' + layer : '');
+  return (ns || 'diagram') + (layer ? '-' + layer : '') + (view !== 'ns' ? '-' + view : '');
+}
+async function download(format, mime) {
+  status('exporting ' + format + '…');
+  try {
+    const r = await fetch(exportURL(format));
+    if (!r.ok) { status('error: ' + (await r.text()), true); return; }
+    const blob = new Blob([await r.text()], { type: mime });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = diagramName() + '.' + format;
+    a.click(); URL.revokeObjectURL(a.href); status('exported ' + format);
+  } catch (e) { status('error: ' + e.message, true); }
+}
+
+function stopLive() { if (liveTimer) { clearInterval(liveTimer); liveTimer = null; } }
+function startLive() {
+  stopLive();
+  if (!$('ns').value) { status('pick a namespace for live', true); $('live').checked = false; return; }
+  const tick = async () => {
+    try { await loadGraph(false); status('live ● ' + new Date().toLocaleTimeString()); }
+    catch (e) { status('error: ' + e.message, true); }
+  };
+  tick();
+  liveTimer = setInterval(tick, 3000);
+}
+
+async function loadNamespaces() {
+  try {
+    const names = await (await fetch('/api/namespaces')).json();
+    $('ns').innerHTML = names.map(n => `<option>${n}</option>`).join('');
+    await loadLayers();
+  } catch (e) { status('failed to load namespaces: ' + e, true); }
+}
+async function loadLayers() {
+  const ns = $('ns').value;
+  if (!ns || $('view').value === 'cluster') { $('layer').innerHTML = '<option value="">(all)</option>'; return; }
+  try {
+    const ls = await (await fetch('/api/layers?ns=' + encodeURIComponent(ns))).json() || [];
+    $('layer').innerHTML = '<option value="">(all)</option>' +
+      ls.map(l => `<option value="${l.Name}">${l.Name} (${l.Count})</option>`).join('');
+  } catch (e) { /* ignore */ }
+}
+
+$('view').addEventListener('change', () => {
+  const t = $('view').value === 'traffic' || $('view').value === 'combined';
+  $('l7wrap').style.display = t ? 'flex' : 'none';
+  $('livewrap').style.display = t ? 'flex' : 'none';
+  if (!t) { $('live').checked = false; stopLive(); }
+  loadLayers();
+});
+$('ns').addEventListener('change', () => { if (liveTimer) startLive(); loadLayers(); });
+$('l7').addEventListener('change', () => { if (liveTimer) startLive(); });
+$('live').addEventListener('change', () => { $('live').checked ? startLive() : stopLive(); });
+$('layout').addEventListener('change', () => { if (cy && cy.elements().length) runLayout(); });
+$('icons').addEventListener('change', () => { if (cy) applyIcons(); });
+$('render').addEventListener('click', render);
+$('fit').addEventListener('click', () => cy && cy.fit(undefined, 30));
+$('dlSvg').addEventListener('click', () => download('svg', 'image/svg+xml'));
+$('dlD2').addEventListener('click', () => download('d2', 'text/plain'));
+
+initCy();
+loadNamespaces();
+</script>
+</body>
+</html>

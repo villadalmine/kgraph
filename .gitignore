@@ -1,0 +1,16 @@
+# compiled binary
+/kgraph
+
+# generated output
+/kgraph-docs/
+*.svg
+*.d2
+
+# secrets / local config
+.env
+
+# demo output
+/demo-out/
+
+# editor / OS
+.DS_Store
